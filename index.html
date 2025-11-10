@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>📚 AR ISBN Book Scanner</title>
+<link href="https://fonts.googleapis.com/css2?family=Kristi&display=swap" rel="stylesheet">
+
+<style>
+:root {
+  --book-width: 320px;
+  --book-height: 440px;
+  --page-color: #f5deb3;
+  --accent: #d8a84f;
+  --bg-dark: #121212;
+  --text-light: #f4f4f4;
+}
+
+body {
+  margin: 0;
+  font-family: 'Poppins', sans-serif;
+  text-align: center;
+  background: linear-gradient(180deg, #0e0e0e 0%, #1c1c1c 100%);
+  color: var(--text-light);
+  padding: 20px;
+}
+
+h1 {
+  color: var(--accent);
+  margin: 10px 0;
+  font-weight: 600;
+}
+
+#scanner-container {
+  width: min(92vw, 400px);
+  height: 240px;
+  background: #000;
+  border: 2px solid var(--accent);
+  border-radius: 10px;
+  margin: 15px auto;
+  overflow: hidden;
+}
+
+/* Book layout */
+#book-wrap {
+  display: flex;
+  justify-content: center;
+  perspective: 1500px;
+  margin-top: 30px;
+}
+
+.book {
+  width: var(--book-width);
+  height: var(--book-height);
+  position: relative;
+  transform-style: preserve-3d;
+}
+
+/* Each single page */
+.page {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  background: var(--page-color);
+  border-radius: 8px;
+  box-shadow: 8px 0 18px rgba(0,0,0,0.5);
+  padding: 25px;
+  box-sizing: border-box;
+  transform-origin: left center;
+  transform-style: preserve-3d;
+  transition: transform 1s cubic-bezier(0.77, 0, 0.175, 1);
+  font-family: 'Kristi', cursive;
+  color: #2e1b00;
+  overflow-y: auto;
+}
+
+.page.flipped {
+  transform: rotateY(-180deg);
+  z-index: 1 !important;
+}
+
+/* Front cover slightly lifted */
+.page.cover {
+  transform: translateY(-8px);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* Cover style */
+.cover-face {
+  width: 100%;
+  height: 100%;
+  background-size: cover;
+  background-position: center;
+  border-radius: 8px;
+  box-shadow: inset 0 0 30px rgba(0,0,0,0.4);
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+}
+
+.cover-title {
+  background: rgba(0,0,0,0.5);
+  color: #fff;
+  padding: 10px;
+  width: 100%;
+  text-align: center;
+  font-family: 'Kristi', cursive;
+  font-size: 28px;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+/* Inner content pages */
+.page-content {
+  font-family: 'Kristi', cursive;
+  font-size: 22px;
+  color: #2e1b00;
+  text-align: left;
+  overflow-y: auto;
+  max-height: 380px;
+}
+
+.meta {
+  font-weight: bold;
+  margin-bottom: 10px;
+  color: #4a2e00;
+}
+
+.controls {
+  margin-top: 25px;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  background: var(--accent);
+  border: none;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 14px;
+  padding: 10px 15px;
+  margin: 6px;
+  cursor: pointer;
+  transition: transform 0.2s, background 0.3s;
+}
+
+.btn:hover {
+  background: #f1c15d;
+  transform: translateY(-2px);
+}
+
+.btn.secondary {
+  background: #222;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+#message {
+  margin-top: 15px;
+  font-size: 15px;
+  color: #bbb;
+}
+</style>
+</head>
+
+<body>
+<h1>📘 AR ISBN Book Scanner</h1>
+<div id="scanner-container" aria-label="Camera scanner area"></div>
+<div id="book-wrap"></div>
+
+<div class="controls" id="controls" style="display:none;">
+  <button class="btn" id="read-summary-btn">🔊 Read Summary</button>
+  <button class="btn secondary" id="prev-page-btn">◀ Previous</button>
+  <button class="btn secondary" id="next-page-btn">Next ▶</button>
+  <button class="btn" id="rescan-btn" style="min-width:90px;">Scan Another</button>
+</div>
+
+<div id="message"></div>
+<audio id="page-sound" preload="auto" src="https://cdn.pixabay.com/download/audio/2022/03/15/audio_8b1d8e7f10.mp3?filename=page-turn-102978.mp3"></audio>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+<script>
+const scannerContainer = document.getElementById('scanner-container');
+const bookWrap = document.getElementById('book-wrap');
+const controls = document.getElementById('controls');
+const readBtn = document.getElementById('read-summary-btn');
+const nextBtn = document.getElementById('next-page-btn');
+const prevBtn = document.getElementById('prev-page-btn');
+const rescanBtn = document.getElementById('rescan-btn');
+const msg = document.getElementById('message');
+const pageSound = document.getElementById('page-sound');
+
+let detectedOnce = false;
+let pages = [];
+let currentIndex = 0;
+let speechUtterance = null;
+let lastFetched = null;
+let isSpeaking = false;
+
+function startScanner() {
+  detectedOnce = false;
+  msg.textContent = "Point the camera at the ISBN barcode.";
+  bookWrap.innerHTML = '';
+  controls.style.display = 'none';
+  pages = [];
+  currentIndex = 0;
+
+  if (Quagga) {
+    Quagga.init({
+      inputStream: {
+        name: "Live",
+        type: "LiveStream",
+        target: scannerContainer,
+        constraints: { facingMode: "environment" }
+      },
+      decoder: { readers: ["ean_reader","ean_8_reader","upc_reader","code_128_reader"] },
+      locate: true
+    }, function(err) {
+      if (err) { msg.textContent = "Camera access error."; return; }
+      Quagga.start();
+      msg.textContent = "Scanning…";
+    });
+
+    Quagga.onDetected(handleDetect);
+  }
+}
+
+function handleDetect(result) {
+  if (detectedOnce) return;
+  const code = result?.codeResult?.code;
+  if (!code) return;
+  detectedOnce = true;
+  Quagga.offDetected(handleDetect);
+  try { Quagga.stop(); } catch(e){}
+  msg.textContent = "Barcode detected: " + code;
+  fetchBookByISBN(code);
+}
+
+async function fetchBookByISBN(isbn) {
+  msg.textContent = "Fetching book details…";
+  try {
+    const endpoint = `https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}`;
+    const r = await fetch(endpoint);
+    const json = await r.json();
+    if (!json.items || json.items.length === 0) throw new Error('No book found');
+    const vol = json.items[0];
+    lastFetched = vol;
+    buildBookFromVolume(vol, isbn);
+    msg.textContent = "Tap Next ▶ to turn the page.";
+  } catch (err) {
+    console.error(err);
+    msg.textContent = "Book not found. Try scanning again.";
+    controls.style.display = 'block';
+    rescanBtn.style.display = 'inline-block';
+  }
+}
+
+function buildBookFromVolume(volume, isbn) {
+  const info = volume.volumeInfo || {};
+  const title = info.title || "Untitled";
+  const authors = info.authors ? info.authors.join(', ') : 'Unknown Author';
+  const description = info.description || "No description available.";
+  const image = info.imageLinks ? (info.imageLinks.large || info.imageLinks.thumbnail || info.imageLinks.smallThumbnail) : '';
+  const rating = info.averageRating || null;
+  const ratingsCount = info.ratingsCount || 0;
+
+  bookWrap.innerHTML = '';
+  const book = document.createElement('div');
+  book.className = 'book';
+  bookWrap.appendChild(book);
+
+  function createPage(content, zIndex, extraClass='') {
+    const page = document.createElement('div');
+    page.className = `page ${extraClass}`;
+    page.style.zIndex = zIndex ?? 1;
+    page.innerHTML = content;
+    return page;
+  }
+
+  // Cover page
+  const cover = createPage(
+    `<div class="cover-face" style="background-image:url('${image ? image.replace(/&edge=curl/g,'') : ''}')">
+      <div class="cover-title">${title}</div>
+    </div>`, 30, 'cover');
+  pages.push(cover);
+  book.appendChild(cover);
+
+  // Summary
+  const summary = createPage(`<div class="page-content"><div class="meta">Summary</div>${stripHtml(description)}</div>`, 20);
+  pages.push(summary);
+  book.appendChild(summary);
+
+  // Author info
+  const authorPage = createPage(`<div class="page-content"><div class="meta">Author</div>${authors}</div>`, 15);
+  pages.push(authorPage);
+  book.appendChild(authorPage);
+
+  // Reviews
+  const reviewPage = createPage(
+    `<div class="page-content">
+      <div class="meta">Rating</div>
+      ${rating ? `★ ${rating} (${ratingsCount} reviews)` : 'No reviews found.'}
+    </div>`, 10);
+  pages.push(reviewPage);
+  book.appendChild(reviewPage);
+
+  // End page
+  const endPage = createPage(`<div class="page-content"><div class="meta">The End</div>Scan another book!</div>`, 5);
+  pages.push(endPage);
+  book.appendChild(endPage);
+
+  controls.style.display = 'flex';
+  nextBtn.onclick = flipForward;
+  prevBtn.onclick = flipBackward;
+  rescanBtn.onclick = restartScan;
+  readBtn.onclick = () => toggleSpeech(description);
+  currentIndex = 0;
+  updateControlState();
+}
+
+function flipForward() {
+  if (currentIndex >= pages.length - 1) return;
+  pages[currentIndex].classList.add('flipped');
+  playPageSound();
+  currentIndex++;
+  updateControlState();
+}
+
+function flipBackward() {
+  if (currentIndex <= 0) return;
+  pages[currentIndex - 1].classList.remove('flipped');
+  playPageSound();
+  currentIndex--;
+  updateControlState();
+}
+
+function playPageSound() {
+  pageSound.currentTime = 0;
+  pageSound.play().catch(()=>{});
+}
+
+function updateControlState() {
+  prevBtn.disabled = (currentIndex === 0);
+  nextBtn.disabled = (currentIndex >= pages.length - 1);
+}
+
+/* Speech toggle (play/pause/resume) */
+function toggleSpeech(text) {
+  if (!('speechSynthesis' in window)) {
+    msg.textContent = "Speech not supported in this browser.";
+    return;
+  }
+  const synth = window.speechSynthesis;
+  if (!isSpeaking) {
+    speechUtterance = new SpeechSynthesisUtterance(stripHtml(text));
+    speechUtterance.rate = 1.0;
+    speechUtterance.pitch = 1.0;
+    speechUtterance.onend = () => {
+      isSpeaking = false;
+      readBtn.textContent = "🔊 Read Summary";
+      msg.textContent = "Finished reading.";
+    };
+    readBtn.textContent = "⏸️ Pause";
+    msg.textContent = "Reading summary aloud...";
+    isSpeaking = true;
+    synth.speak(speechUtterance);
+  } else {
+    if (synth.paused) {
+      synth.resume();
+      readBtn.textContent = "⏸️ Pause";
+      msg.textContent = "Resumed reading.";
+    } else if (synth.speaking) {
+      synth.pause();
+      readBtn.textContent = "▶️ Resume";
+      msg.textContent = "Paused reading.";
+    }
+  }
+}
+
+function restartScan() {
+  try { window.speechSynthesis.cancel(); } catch(e){}
+  try { pageSound.pause(); pageSound.currentTime = 0; } catch(e){}
+  try { Quagga.stop(); } catch(e){}
+  startScanner();
+  setTimeout(()=>{ controls.style.display = 'none'; bookWrap.innerHTML = ''; msg.textContent = ''; }, 300);
+}
+
+function stripHtml(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  return tmp.textContent || tmp.innerText || '';
+}
+
+startScanner();
+window.addEventListener('beforeunload', ()=> {
+  try { window.speechSynthesis.cancel(); } catch(e){}
+  try { Quagga.stop(); } catch(e){}
+});
+</script>
+</body>
+</html>
